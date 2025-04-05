@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Highmark Patient Assist Portal</title>
+
+    <script defer src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0/dist/tf.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/@tensorflow-models/facemesh"></script>
+    <script src="https://www.youtube.com/iframe_api"></script>
+
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; }
+        .video-card { display: inline-block; margin: 10px; padding: 20px; border: 1px solid #ddd; }
+        iframe { width: 560px; height: 315px; }
+        .preview { width: 200px; height: 120px; }
+         /* Responsive Banner */
+         .banner {
+            width: 100%;  /* Full width */
+            max-height: 250px;  /* Prevents excessive height */
+            object-fit: cover;  /* Ensures proper scaling */
+            display: block;
+        }
+
+         /* Buttons */
+         button { 
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            font-size: 14px;
+            cursor: pointer;
+            border-radius: 4px;
+            margin: 8px;
+            transition: background-color 0.3s;
+        }
+        button:hover { background-color: #0056b3; }
+
+        .user-info {
+            position: absolute;
+            top: 80px; /* Positioning below the banner */
+            left: 20px; /* Align to the right side */
+            font-size: 14px;
+            text-align: left;
+            width: 100%;
+            max-width: 250px;
+            padding: 10px;
+            box-sizing: border-box;
+            background-color: rgba(0, 123, 255, 0.8); /* Semi-transparent blue */
+            color: white; /* Text color */
+            border-radius: 8px; /* Rounded corners */
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); /* Subtle shadow for depth */
+        }
+
+        /* Modal styles for watch summary */
+        .summary-modal {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: linear-gradient(145deg, #e0f7fa, #ffffff); /* Soft pastel gradient */
+            padding: 20px;
+            border-radius: 12px; /* Rounded corners */
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.1); /* Soft shadow for depth */
+            z-index: 1000;
+            width: 80%; /* Slightly more responsive width */
+            max-width: 600px; /* Limiting max width for better appearance */
+            border: 1px solid #ddd; /* Subtle border */
+        }
+        
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            text-align: left;
+        }
+
+        th, td {
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+            font-size: 12px;
+        }
+
+        th {
+            background-color: #007bff;
+            color: white;
+            
+        }
+
+        button.close {
+            background-color: #dc3545;
+            color: white;
+            padding: 8px 16px;
+            font-size: 14px;
+            cursor: pointer;
+            border-radius: 4px;
+            margin-top: 10px;
+        }
+
+        button.close:hover {
+            background-color: #c82333;
+        }
+    </style>
+</head>
+<body>
+    <!-- Responsive Banner -->
+    <img class="banner" src="https://t3.ftcdn.net/jpg/00/58/30/88/360_F_58308820_35Vcb9sOYoXM8goMrvcE6punmd1e496x.jpg" alt="Healthcare Banner">
+
+    <h1>Highmark Patient Assist Portal</h1>
+    <div class="user-info" id="userInfo"></div>
+    <button id="consentButton">Consent for Engagement Tracking</button>
+    <button id="summaryButton">AI Driven Engagement Summary</button>
+
+    <div id="videoPortal"></div>
+    <div id="videoElement"></div>
+
+    <video id="videoFeed" width="640" height="480" style="display:none;" autoplay playsinline></video>
+
+    <script>
+        let disengagedFrames = 0;
+        const maxDisengagementFrames = 100;
+        let model;
+        let player;
+        let currentVideoId = null;
+        let currentVideoCardId = null;
+        let isPausedDueToDisengagement = false;
+        let engagementInterval = null;
+        let watchTime = {};
+        let disengagedTime = {};
+        let watchStartTime = null;
+        let disengageStartTime = null;
+
+        async function loadModel() {
+            model = await facemesh.load();
+        }
+
+        async function startTracking() {
+            await loadModel();
+            const videoStream = await navigator.mediaDevices.getUserMedia({ video: true });
+            const videoFeed = document.getElementById('videoFeed');
+            videoFeed.srcObject = videoStream;
+            videoFeed.onloadedmetadata = () => videoFeed.play();
+        }
+
+        async function analyzeEngagement(videoFeed) {
+            if (engagementInterval) clearInterval(engagementInterval);
+
+            engagementInterval = setInterval(async () => {
+                if (!player || player.getPlayerState() !== YT.PlayerState.PLAYING) return;
+                if (videoFeed.videoWidth === 0 || videoFeed.videoHeight === 0) return;
+
+                const predictions = await model.estimateFaces(videoFeed, false);
+                const isUserLookingAway = predictions.length === 0 || isLookingAway(predictions[0]);
+
+                if (isUserLookingAway) {
+                    if (!disengageStartTime) disengageStartTime = Date.now();
+                } else {
+                    if (disengageStartTime) {
+                        let elapsedDisengage = (Date.now() - disengageStartTime) / 1000;
+                        disengagedTime[currentVideoCardId] = (disengagedTime[currentVideoCardId] || 0) + elapsedDisengage;
+                        disengageStartTime = null;
+                    }
+                }
+
+                if (isUserLookingAway) {
+                    disengagedFrames++;
+                    if (disengagedFrames > maxDisengagementFrames) {
+                        if (player.getPlayerState() === YT.PlayerState.PLAYING) {
+                            console.log("User disengaged. Pausing video.");
+                            player.pauseVideo();
+                            isPausedDueToDisengagement = true;
+
+                            setTimeout(() => {
+                                alert('You seem disengaged. Please focus on the video.');
+                            }, 200);
+                        }
+                        disengagedFrames = 0;
+                    }
+                } else {
+                    disengagedFrames = Math.max(0, disengagedFrames - 1);
+                    if (isPausedDueToDisengagement && player.getPlayerState() === YT.PlayerState.PAUSED) {
+                        console.log("User re-engaged. Resuming video.");
+                        player.playVideo();
+                        isPausedDueToDisengagement = false;
+                    }
+                }
+            }, 100);
+        }
+
+        function isLookingAway(prediction) {
+            if (!prediction || !prediction.boundingBox) return true;
+            const { topLeft, bottomRight } = prediction.boundingBox;
+
+            const faceWidth = bottomRight[0] - topLeft[0];
+            const faceHeight = bottomRight[1] - topLeft[1];
+
+            const faceCenterX = (topLeft[0] + bottomRight[0]) / 2;
+            const faceCenterY = (topLeft[1] + bottomRight[1]) / 2;
+
+            const screenCenterX = videoFeed.videoWidth / 2;
+            const screenCenterY = videoFeed.videoHeight / 2;
+
+            const dx = Math.abs(faceCenterX - screenCenterX);
+            const dy = Math.abs(faceCenterY - screenCenterY);
+
+            return dx > faceWidth * 0.5 || dy > faceHeight * 0.5;
+        }
+
+        document.getElementById('consentButton').addEventListener('click', function() {
+            // Disable the button after it is clicked
+            this.disabled = true;
+            this.innerText = 'Engagement Tracking In Progress'; // Optionally change the button text
+
+            // Change the color of the button
+            this.style.backgroundColor = '#28a745'; // Green color for success
+            this.style.borderColor = '#28a745'; // Match the border color
+            this.style.cursor = 'not-allowed';  // Change cursor style to indicate it's disabled
+            
+            startTracking();
+        });
+        
+
+        document.getElementById('summaryButton').addEventListener('click', showWatchSummary);
+        document.addEventListener("DOMContentLoaded", function() {
+            const name = localStorage.getItem("userName") || "Guest";
+            const loginTime = localStorage.getItem("loginTime") || "Unknown";
+            document.getElementById("userInfo").innerText = `${name}\nLogin Time: ${loginTime}`;
+
+            // Ask for consent on page load
+    let userConsent = confirm("Do you consent to engagement tracking?");
+    
+    if (userConsent) {
+        document.getElementById('consentButton').disabled = true;
+        document.getElementById('consentButton').innerText = 'Engagement Tracking In Progress';
+        document.getElementById('consentButton').style.backgroundColor = '#28a745'; // Green success color
+        document.getElementById('consentButton').style.borderColor = '#28a745';
+        document.getElementById('consentButton').style.cursor = 'not-allowed';
+
+        startTracking();  // Start engagement tracking
+    } else {
+        alert("Engagement tracking has been disabled.");
+    }
+
+        });
+
+        const videos = [
+            { id: 1, title: "Health & Wellness", url: "https://www.youtube.com/embed/PHz5oYE4Lao" },
+            { id: 2, title: "Exercise Routine", url: "https://www.youtube.com/embed/1HkBl03WLk0" },
+            { id: 3, title: "Mental Health Tips", url: "https://www.youtube.com/embed/ZCFR9NN-1RM" },
+            { id: 4, title: "Healthy Eating", url: "https://www.youtube.com/embed/XMcab1MFaLc" },
+            { id: 5, title: "Stress Management", url: "https://www.youtube.com/embed/GVGcdAAAER0" },
+            { id: 6, title: "Better Sleep Habits", url: "https://www.youtube.com/embed/cGz9VSVTEXo" }
+        ];
+
+        function renderVideoPortal() {
+            const container = document.getElementById('videoPortal');
+            container.innerHTML = '';
+
+            videos.forEach(video => {
+                const videoId = new URL(video.url).pathname.split('/').pop();
+                const card = document.createElement('div');
+                card.className = "video-card";
+                card.id = `card-${video.id}`;
+                card.innerHTML = `
+                    <h3>${video.title}</h3>
+                    <img class="preview" src="https://img.youtube.com/vi/${videoId}/0.jpg" alt="Video Preview"><br>
+                    <button class="bg-blue-500 text-white px-4 py-2 rounded-md hover:bg-blue-700 transition"  onclick="playVideo('${video.url}', ${video.id})">Play Video</button>
+                `;
+                container.appendChild(card);
+            });
+        }
+
+        function playVideo(url, vidId) {
+            const videoId = new URL(url).pathname.split('/').pop();
+
+            // Reset previous video button if it was not completed
+    if (currentVideoCardId && currentVideoCardId !== vidId) {
+        const previousPlayButton = document.querySelector(`#card-${currentVideoCardId} button`);
+        if (previousPlayButton) {
+            previousPlayButton.disabled = false;
+            previousPlayButton.innerText = 'Play Video';
+            previousPlayButton.style.backgroundColor = '#007bff'; // Restore original button color
+            previousPlayButton.style.cursor = 'pointer';
+        }
+    }
+
+            currentVideoId = videoId;
+            currentVideoCardId = vidId;
+            disengagedFrames = 0;
+            disengageStartTime = null;
+
+            if (!watchTime[vidId]) watchTime[vidId] = 0;
+            if (!disengagedTime[vidId]) disengagedTime[vidId] = 0;
+
+           
+
+            if (player) {
+                player.loadVideoById(videoId);
+            } else {
+                player = new YT.Player('videoElement', {
+                    height: '315',
+                    width: '560',
+                    videoId: videoId,
+                    events: {
+                        'onReady': () => { analyzeEngagement(document.getElementById('videoFeed')); },
+                        'onStateChange': onPlayerStateChange
+                    }
+                });
+            }
+              // Disable the Play button for this video
+              const playButton = document.querySelector(`#card-${vidId} button`);
+              if (playButton) {
+                  playButton.disabled = true;
+                  playButton.innerText = 'Video Playing';  // Optionally update the button text
+                  playButton.style.backgroundColor = '#6c757d';  // Change button color to grey to indicate it's disabled
+                 playButton.style.cursor = 'not-allowed';  // Change cursor style to indicate it's disabled
+             }
+        }
+
+        function onPlayerStateChange(event) {
+            if (event.data === YT.PlayerState.PLAYING) {
+                watchStartTime = Date.now();
+                disengageStartTime = null;
+                analyzeEngagement(document.getElementById('videoFeed'));
+            } else if (event.data === YT.PlayerState.PAUSED || event.data === YT.PlayerState.ENDED) {
+                if (watchStartTime) {
+                    let elapsedWatchTime = (Date.now() - watchStartTime) / 1000;
+                    watchTime[currentVideoCardId] += elapsedWatchTime;
+                    watchStartTime = null;
+                }
+
+                if (disengageStartTime) {
+                    let elapsedDisengage = (Date.now() - disengageStartTime) / 1000;
+                    disengagedTime[currentVideoCardId] = (disengagedTime[currentVideoCardId] || 0) + elapsedDisengage;
+                    disengageStartTime = null;
+                }
+                // If video has ended, re-enable the play button
+        if (event.data === YT.PlayerState.ENDED) {
+            const playButton = document.querySelector(`#card-${currentVideoCardId} button`);
+            if (playButton) {
+                playButton.disabled = false;
+                playButton.innerText = 'Play Video';
+                playButton.style.backgroundColor = '#007bff'; // Restore original button color
+                playButton.style.cursor = 'pointer'; // Restore cursor style
+            }
+        }
+            }
+        }
+
+        function showWatchSummary() {
+            // Create a table structure
+            let summaryHTML = `
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Video ID</th>
+                            <th>Video Title</th>
+                            <th>Watch Time(s)</th>
+                            <th>Disengaged Time(s)</th>
+                            <th>Status</th>
+                            <th>Completion Date</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+            `;
+        
+            for (let id in watchTime) {
+                const videoTitle = videos.find(video => video.id == id)?.title || 'Unknown Title';
+                const watchDuration = watchTime[id].toFixed(1);
+                const disengageDuration = (disengagedTime[id] || 0).toFixed(1);
+                let status = 'In Progress'; // Default status
+                let date = ''; // Default date
+        
+                // Check if the video is fully watched (e.g., if the watch time exceeds a threshold, e.g., 90% of the video length)
+                if (watchDuration > 0 && player) {
+                    const videoDuration = player.getDuration();
+                    if (watchDuration >= videoDuration * 0.9) {  // You can adjust the percentage as needed
+                        status = 'Completed';
+                        date = new Date().toLocaleDateString(); // Add the current date
+                    }
+                }
+        
+                summaryHTML += `
+                    <tr>
+                        <td>${id}</td>
+                        <td>${videoTitle}</td>
+                        <td>${watchDuration}</td>
+                        <td>${disengageDuration}</td>
+                        <td>${status}</td>
+                        <td>${date}</td>
+                    </tr>
+                `;
+            }
+        
+            summaryHTML += `
+                    </tbody>
+                </table>
+            `;
+            
+            // Display the summary in a modal or popup for better user experience
+            const summaryContainer = document.createElement('div');
+            summaryContainer.innerHTML = summaryHTML;
+            const summaryModal = document.createElement('div');
+            summaryModal.className = 'summary-modal';
+            summaryModal.appendChild(summaryContainer);
+        
+            const closeButton = document.createElement('button');
+            closeButton.innerText = 'Close';
+            closeButton.className = 'close';
+            closeButton.onclick = () => {
+                summaryModal.remove();
+            };
+            summaryModal.appendChild(closeButton);
+        
+            document.body.appendChild(summaryModal);
+        }
+        
+
+        function onYouTubeIframeAPIReady() {
+            renderVideoPortal();
+        }
+
+        document.addEventListener('visibilitychange', function() {
+            if (document.hidden) {
+                // Pause the video if the document is hidden
+                if (player && player.getPlayerState() === YT.PlayerState.PLAYING) {
+                    player.pauseVideo();
+                  // Use setTimeout to delay the alert until after the video is paused
+            setTimeout(() => {
+                alert('You have been switched to another tab or application. The video has been paused.');
+            }, 100); // Small delay (100ms)
+                }
+            } else {
+                // Resume the video if the document is visible
+                if (player && player.getPlayerState() === YT.PlayerState.PAUSED) {
+                    player.playVideo();
+                }
+            }
+        });
+        
+    </script>
+
+    <footer style="margin-top: 20px; font-size: 12px; color: #555;">
+        &copy; 2025 Highmark Patient Assist Portal. All rights reserved.
+    </footer>
+</body>
+</html>
