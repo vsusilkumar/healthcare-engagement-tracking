@@ -227,8 +227,11 @@
             document.getElementById("userInfo").innerText = `${name}\nLogin Time: ${loginTime}`;
 
             // Ask for consent on page load
-    let userConsent = confirm("Do you consent to engagement tracking?");
-    
+            let userConsent = confirm(
+                "Do you consent to enable webcam access for engagement tracking,similar to proctored assessments.\n\n" +
+                "This helps maintain a secure and focused environment during your session."
+              );
+              
     if (userConsent) {
         document.getElementById('consentButton').disabled = true;
         document.getElementById('consentButton').innerText = 'Engagement Tracking In Progress';
@@ -238,7 +241,8 @@
 
         startTracking();  // Start engagement tracking
     } else {
-        alert("Engagement tracking has been disabled.");
+        alert("Engagement tracking has been disabled. Redirecting to Login page");
+        window.location.href = "login.html";
     }
 
         });
@@ -307,6 +311,9 @@
                     }
                 });
             }
+
+            document.getElementById('videoElement').scrollIntoView({ behavior: 'smooth', block: 'center' });
+
               // Disable the Play button for this video
               const playButton = document.querySelector(`#card-${vidId} button`);
               if (playButton) {
